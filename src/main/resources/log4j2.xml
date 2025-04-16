@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN">
+
+    <!-- Appenders định nghĩa nơi log sẽ được ghi -->
+
+    <!-- 1. Console Appender: ghi log ra console -->
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n" />
+        </Console>
+
+        <!-- 2. RollingFile Appender: ghi log vào file, có cơ chế xoay file (rolling) -->
+        <RollingFile name="FileAppender"
+                     fileName="logs/auth-service.log"
+                     filePattern="logs/auth-service-%d{yyyy-MM-dd-HH}-%i.log.gz">
+            <PatternLayout>
+                <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n</pattern>
+            </PatternLayout>
+            <Policies>
+                <!-- Chính sách xoay file theo kích thước -->
+                <SizeBasedTriggeringPolicy size="10 MB" />
+                <!-- Hoặc xoay file theo thời gian (có thể dùng TimeBasedTriggeringPolicy) -->
+            </Policies>
+            <DefaultRolloverStrategy max="10" />
+        </RollingFile>
+    </Appenders>
+
+    <!-- Loggers quản lý mức độ log và cách append -->
+
+    <Loggers>
+        <!-- Root Logger cho toàn hệ thống -->
+        <Root level="info">
+            <AppenderRef ref="Console" />
+            <AppenderRef ref="FileAppender" />
+        </Root>
+
+        <!-- Logger riêng cho package của Auth Service, nếu muốn mức log chi tiết hơn -->
+        <Logger name="com.example.auth" level="debug" additivity="false">
+            <AppenderRef ref="Console" />
+            <AppenderRef ref="FileAppender" />
+        </Logger>
+    </Loggers>
+
+</Configuration>
