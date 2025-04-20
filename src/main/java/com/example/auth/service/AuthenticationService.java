@@ -5,7 +5,10 @@ import com.example.auth.dto.AuthenticationResponse;
 import com.example.auth.dto.RegisterRequest;
 import com.example.auth.entity.Role;
 import com.example.auth.entity.User;
+import com.example.auth.entity.VerificationToken;
+import com.example.auth.messaging.AmqpEventPublisher;
 import com.example.auth.repository.UserRepository;
+import com.example.auth.repository.VerificationTokenRepository;
 import lombok.RequiredArgsConstructor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;    // Thêm import logger Log4j2
@@ -15,7 +18,10 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -25,32 +31,37 @@ public class AuthenticationService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final VerificationTokenRepository tokenRepository;
+    private final AmqpEventPublisher eventPublisher;
     private final JwtService jwtService;
     private final AuthenticationManager authManager;
 
     public AuthenticationResponse register(RegisterRequest request) {
-        logger.info("Bắt đầu đăng ký tài khoản cho email: {}", request.getEmail());
-
+        // 1) create user (verified = false by default)
         var user = User.builder()
                 .firstName(request.getFirstName())
                 .lastName(request.getLastName())
                 .email(request.getEmail())
                 .password(passwordEncoder.encode(request.getPassword()))
                 .role(Role.USER)
+                .verified(false)                                      // ← ensure false
                 .build();
-
-        // Log chi tiết hơn ở mức DEBUG, nếu cần
-        logger.debug("Thông tin user trước khi lưu: {}", user);
-
         userRepository.save(user);
-        logger.info("Đã lưu user với email: {} vào database", request.getEmail());
 
-        var jwtToken = jwtService.generateToken(user);
-        logger.debug("JWT token vừa được sinh ra cho user: {}", request.getEmail());
+        // 2) generate & save a one‑time token
+        String token = UUID.randomUUID().toString();
+        var vt = new VerificationToken();
+        vt.setToken(token);
+        vt.setUser(user);
+        vt.setExpiryDate(Instant.now().plus(24, ChronoUnit.HOURS));
+        tokenRepository.save(vt);
 
-        logger.info("Đăng ký thành công cho email: {}", request.getEmail());
+        // 3) fire an event so NotificationService can send the email
+        eventPublisher.publishUserRegistered(user, token);
+
+        // 4) respond with “check your email” (no full JWT yet)
         return AuthenticationResponse.builder()
-                .token(jwtToken)
+                .message("Registration successful! Please check your email to verify your account.")
                 .build();
     }
 
