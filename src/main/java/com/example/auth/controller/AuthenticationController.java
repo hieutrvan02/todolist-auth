@@ -1,13 +1,16 @@
 package com.example.auth.controller;
 
-import com.example.auth.dto.AuthenticationRequest;
-import com.example.auth.dto.AuthenticationResponse;
-import com.example.auth.dto.RegisterRequest;
+import com.example.auth.dto.*;
+import com.example.auth.entity.User;
 import com.example.auth.service.AuthenticationService;
 import com.example.auth.service.JwtService;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jws;
+import io.jsonwebtoken.JwtException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -34,42 +37,53 @@ public class AuthenticationController {
         return ResponseEntity.ok(authenticationService.authenticate(request));
     }
 
+    @GetMapping("/verify")
+    public ResponseEntity<String> verifyEmail(
+            @RequestParam("token") String token
+    ) {
+        authenticationService.verifyToken(token);
+        return ResponseEntity.ok("Email verified successfully");
+    }
+
+    @PostMapping("/request-token")
+    public ResponseEntity<RequestTokenResponse> requestToken(
+            @RequestBody AuthenticationRequest request
+    ) {
+        return ResponseEntity.ok(authenticationService.requestToken(request));
+    }
+
+    @PostMapping("/exchange-token")
+    public ResponseEntity<AuthenticationResponse> exchangeToken(
+            @RequestBody TokenExchangeRequest request
+    ) {
+        return ResponseEntity.ok(authenticationService.exchangeToken(request));
+    }
+
     @PostMapping("/validate")
     public ResponseEntity<?> validateToken(@RequestHeader("Authorization") String authHeader) {
-        // Kiểm tra header có tồn tại và có định dạng hợp lệ (có tiền tố "Bearer ")
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             return ResponseEntity.badRequest().body("Missing or invalid Authorization header");
         }
-
-        // Loại bỏ tiền tố "Bearer " để lấy token thật
         String token = authHeader.substring(7);
 
         try {
-            String userEmail = jwtService.extractUsername(token);
+            // will throw if invalid/expired or if it's a request token
+            Jws<Claims> jws = jwtService.validateAccessToken(token);
+            Claims claims = jws.getBody();
+            String email = claims.getSubject();
+            User user = authenticationService
+                    .getUserByEmail(email)
+                    .orElseThrow(() -> new UsernameNotFoundException("User not found"));
 
-            var user = authenticationService
-                    .getUserByEmail(userEmail)
-                    .orElseThrow(() -> new RuntimeException("User not found"));
-
-            boolean valid = jwtService.isTokenValid(token, user);
-
-            if (!valid) {
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Token invalid or expired");
-            }
-
-            return ResponseEntity.ok(
-                    Map.of(
-                            "valid", true,
-                            "userId", user.getId(),
-                            "email", user.getEmail(),
-                            "role", user.getRole()
-                    )
-            );
-        } catch (Exception e) {
-            // Bắt các lỗi parse token, token sai định dạng, v.v.
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid token");
+            return ResponseEntity.ok(Map.of(
+                    "valid", true,
+                    "userId", user.getId(),
+                    "email", user.getEmail(),
+                    "role", user.getRole()
+            ));
+        } catch (JwtException | UsernameNotFoundException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid or expired access token");
         }
     }
-
 
 }

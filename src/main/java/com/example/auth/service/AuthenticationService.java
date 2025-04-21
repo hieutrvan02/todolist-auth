@@ -1,8 +1,6 @@
 package com.example.auth.service;
 
-import com.example.auth.dto.AuthenticationRequest;
-import com.example.auth.dto.AuthenticationResponse;
-import com.example.auth.dto.RegisterRequest;
+import com.example.auth.dto.*;
 import com.example.auth.entity.Role;
 import com.example.auth.entity.User;
 import com.example.auth.entity.VerificationToken;
@@ -13,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;    // Thêm import logger Log4j2
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -37,18 +36,16 @@ public class AuthenticationService {
     private final AuthenticationManager authManager;
 
     public AuthenticationResponse register(RegisterRequest request) {
-        // 1) create user (verified = false by default)
         var user = User.builder()
                 .firstName(request.getFirstName())
                 .lastName(request.getLastName())
                 .email(request.getEmail())
                 .password(passwordEncoder.encode(request.getPassword()))
                 .role(Role.USER)
-                .verified(false)                                      // ← ensure false
+                .verified(false)
                 .build();
         userRepository.save(user);
 
-        // 2) generate & save a one‑time token
         String token = UUID.randomUUID().toString();
         var vt = new VerificationToken();
         vt.setToken(token);
@@ -56,45 +53,80 @@ public class AuthenticationService {
         vt.setExpiryDate(Instant.now().plus(24, ChronoUnit.HOURS));
         tokenRepository.save(vt);
 
-        // 3) fire an event so NotificationService can send the email
         eventPublisher.publishUserRegistered(user, token);
 
-        // 4) respond with “check your email” (no full JWT yet)
         return AuthenticationResponse.builder()
                 .message("Registration successful! Please check your email to verify your account.")
                 .build();
     }
 
     public AuthenticationResponse authenticate(AuthenticationRequest request) {
-        logger.info("Bắt đầu xác thực cho email: {}", request.getEmail());
-
-        // Không log password để tránh lộ thông tin nhạy cảm
         authManager.authenticate(
-                new UsernamePasswordAuthenticationToken(
-                        request.getEmail(),
-                        request.getPassword()
-                )
+                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
         );
-        logger.debug("AuthManager đã xác thực thành công cho email: {}", request.getEmail());
 
         var user = userRepository.findByEmail(request.getEmail())
-                .orElseThrow(() -> {
-                    // Log cảnh báo khi user không tồn tại
-                    logger.warn("User không tồn tại với email: {}", request.getEmail());
-                    return new UsernameNotFoundException("User not found");
-                });
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
 
-        var jwtToken = jwtService.generateToken(user);
-        logger.info("User xác thực thành công cho email: {}", request.getEmail());
-        logger.debug("JWT token đã được sinh cho user: {}", request.getEmail());
-
+        String accessJwt = jwtService.generateAccessToken(user);
         return AuthenticationResponse.builder()
-                .token(jwtToken)
+                .token(accessJwt)
                 .build();
     }
 
     public Optional<User> getUserByEmail(String email) {
         logger.debug("Tìm user với email: {}", email);
         return userRepository.findByEmail(email);
+    }
+
+    public RequestTokenResponse requestToken(AuthenticationRequest rq) {
+        authManager.authenticate(
+                new UsernamePasswordAuthenticationToken(rq.getEmail(), rq.getPassword())
+        );
+
+        var user = userRepository.findByEmail(rq.getEmail())
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+
+        if (!user.isEnabled()) {
+            throw new BadCredentialsException("Email not verified");
+        }
+
+        String reqToken = jwtService.generateRequestToken(user);
+        return new RequestTokenResponse(reqToken);
+    }
+
+    public AuthenticationResponse exchangeToken(TokenExchangeRequest rq) {
+        String requestToken = rq.getRequestToken();
+
+        String email = jwtService.extractUsername(requestToken);
+
+        var user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+
+        if (!jwtService.isRequestTokenValid(requestToken, user)) {
+            throw new BadCredentialsException("Invalid or expired request token");
+        }
+
+        String accessJwt = jwtService.generateAccessToken(user);
+        return AuthenticationResponse.builder()
+                .token(accessJwt)
+                .build();
+    }
+
+    public void verifyToken(String token) {
+        VerificationToken vt = tokenRepository
+                .findByToken(token)
+                .orElseThrow(() -> new RuntimeException("Invalid verification token"));
+
+        if (vt.getExpiryDate().isBefore(Instant.now())) {
+            throw new RuntimeException("Verification token expired");
+        }
+
+        User user = vt.getUser();
+        user.setVerified(true);
+        userRepository.save(user);
+
+        // Delete the token so it can’t be reused
+        tokenRepository.delete(vt);
     }
 }
